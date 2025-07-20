@@ -168,9 +168,20 @@ class AdcHandle
     */
     float GetMuxFloat(uint8_t chn, uint8_t idx) const;
 
+    /*
+        Additions by Tristan Clutterbuck for external sync
+    */
+    void TriggerConversion();
+    void EnableExternalTrigger();
+
   private:
     OverSampling oversampling_;
     size_t       num_channels_;
+
+    /*
+        Additions by Tristan Clutterbuck for external sync
+    */
+    bool        external_trigger_mode_;
 };
 
 /** @} */

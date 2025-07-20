@@ -81,6 +81,12 @@ static uint16_t DMA_BUFFER_MEM_SECTION
 static uint16_t DMA_BUFFER_MEM_SECTION
     adc1_dma_buffer[DSY_ADC_MAX_CHANNELS * 2];
 
+/*
+    Addition by Tristan Clutterbuck for external sync
+*/
+static bool auto_retrigger = true; 
+static void adc_init_dma1();
+
 // Global ADC Struct
 struct dsy_adc
 {
@@ -96,6 +102,7 @@ struct dsy_adc
     ADC_HandleTypeDef hadc1;
     DMA_HandleTypeDef hdma_adc1;
     bool              mux_used; // flag set when mux is configured
+    bool external_trigger_mode; // Addition by Tristan Clutterbuck for external sync
 };
 
 // Static Functions
@@ -425,6 +432,56 @@ float AdcHandle::GetMuxFloat(uint8_t chn, uint8_t idx) const
            / DSY_ADC_MAX_RESOLUTION;
 }
 
+/*
+    Additions by Tristan Clutterbuck for external sync
+*/
+
+void AdcHandle::TriggerConversion() {
+    if(external_trigger_mode_) {
+        // Stop any ongoing conversion first
+        HAL_ADC_Stop_DMA(&adc.hadc1);
+        
+        // Small delay to let transients settle
+        for(volatile int i = 0; i < 10; i++); // Tune this value
+        
+        // Clear any pending flags
+        __HAL_ADC_CLEAR_FLAG(&adc.hadc1, ADC_FLAG_EOC | ADC_FLAG_EOS | ADC_FLAG_OVR);
+        
+        // Reinitialize DMA for one-shot mode
+        adc_init_dma1();
+        
+        // Another small delay before starting
+        for(volatile int i = 0; i < 10; i++);
+        
+        // Start a single conversion
+        HAL_ADC_Start_DMA(&adc.hadc1, (uint32_t*)adc.dma_buffer, adc.channels);
+    }
+}
+
+void AdcHandle::EnableExternalTrigger() {
+    // Set the flags
+    external_trigger_mode_ = true;
+    adc.external_trigger_mode = true;
+    adc.mux_used = true;  // Force mux behavior for external triggering
+    auto_retrigger = false;  // Disable auto retrigger
+    
+    // Stop current ADC operation
+    HAL_ADC_Stop_DMA(&adc.hadc1);
+    
+    // Reconfigure for one-shot mode
+    adc.hadc1.Init.ContinuousConvMode = DISABLE;
+    adc.hadc1.Init.DiscontinuousConvMode = DISABLE;
+    adc.hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_ONESHOT;
+    
+    // Reinitialize with new settings
+    if(HAL_ADC_Init(&adc.hadc1) != HAL_OK) {
+        // Handle error - could call Error_Handler() or return error code
+    }
+    
+    // Reconfigure DMA for one-shot mode (since we set adc.mux_used = true)
+    adc_init_dma1();
+}
+
 
 // Internal Implementations
 
@@ -497,9 +554,16 @@ static void adc_internal_callback()
                 chn, adc.mux_index[chn], adc.num_mux_pins_required[chn]);
         }
     }
-    // Restart DMA
-    adc_init_dma1();
-    HAL_ADC_Start_DMA(&adc.hadc1, (uint32_t*)adc.dma_buffer, adc.channels);
+
+    /*
+        Modification by Tristan Clutterbuck for external sync
+        Only restart DMA if auto_retrigger is enabled
+    */
+    if(auto_retrigger) {
+        // Restart DMA
+        adc_init_dma1();
+        HAL_ADC_Start_DMA(&adc.hadc1, (uint32_t*)adc.dma_buffer, adc.channels);
+    }
 }
 
 
@@ -538,7 +602,8 @@ extern "C"
 
     void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     {
-        if(hadc->Instance == ADC1 && adc.mux_used)
+        /* Modification by Tristan Clutterbuck for external sync */
+        if(hadc->Instance == ADC1 && (adc.mux_used || adc.external_trigger_mode))
         {
             adc_internal_callback();
         }
